@@ -1,4 +1,7 @@
-{
+"scripts": {
+  "start": "node server.js",
+  "dev": "nodemon server.js"
+}{
   "name": "react",
   "private": true,
   "version": "1.0.0",
@@ -16,3 +19,12 @@
     "vite": "^5.0.8"
   }
 }
+# bash 
+mkdir sidegig-backend
+cd sidegig-backend
+npm init -y
+npm install express mongoose cors dotenv
+npm install --save-dev nodemon
+
+# bash
+npm run dev
