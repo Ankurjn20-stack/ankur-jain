@@ -1340,3 +1340,246 @@ function EmptyState({ text }) {
     </div>
   );
 }
+
+# backend 
+const mongoose = require("mongoose");
+
+// --- Gig Schema ---
+const GigSchema = new mongoose.Schema(
+  {
+    creatorName: { type: String, required: true },
+    title: { type: String, required: true },
+    category: { type: String, required: true },
+    rate: { type: Number, required: true },
+    tags: [{ type: String }],
+    description: { type: String, required: true },
+  },
+  { timestamps: true }
+);
+
+// --- Booking Schema ---
+const BookingSchema = new mongoose.Schema(
+  {
+    gigId: { type: mongoose.Schema.Types.ObjectId, ref: "Gig", required: true },
+    clientName: { type: String, required: true },
+    message: { type: String, required: true },
+    status: {
+      type: String,
+      enum: ["Pending", "Accepted", "Completed", "Declined"],
+      default: "Pending",
+    },
+  },
+  { timestamps: true }
+);
+
+// --- Review Schema ---
+const ReviewSchema = new mongoose.Schema(
+  {
+    bookingId: { type: mongoose.Schema.Types.ObjectId, ref: "Booking", required: true },
+    gigId: { type: mongoose.Schema.Types.ObjectId, ref: "Gig", required: true },
+    clientName: { type: String, required: true },
+    rating: { type: Number, required: true, min: 1, max: 5 },
+    comment: { type: String, required: true },
+  },
+  { timestamps: true }
+);
+
+module.exports = {
+  Gig: mongoose.model("Gig", GigSchema),
+  Booking: mongoose.model("Booking", BookingSchema),
+  Review: mongoose.model("Review", ReviewSchema),
+};
+
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+const { Gig, Booking, Review } = require("./models");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// ---------------------------------------------------------------------------
+// GIG ROUTES
+// ---------------------------------------------------------------------------
+
+// Get all gigs with optional filtering and sorting
+app.get("/api/gigs", async (req, res) => {
+  try {
+    const { category, search, sortBy } = req.query;
+    let query = {};
+
+    if (category && category !== "All categories") {
+      query.category = category;
+    }
+
+    if (search) {
+      const q = search.toLowerCase();
+      query.$or = [
+        { title: { $regex: q, $options: "i" } },
+        { description: { $regex: q, $options: "i" } },
+        { creatorName: { $regex: q, $options: "i" } },
+        { tags: { $in: [new RegExp(q, "i")] } },
+      ];
+    }
+
+    let sort = { createdAt: -1 };
+    if (sortBy === "low") sort = { rate: 1 };
+    if (sortBy === "high") sort = { rate: -1 };
+
+    const gigs = await Gig.find(query).sort(sort);
+    res.json(gigs);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Post a new gig
+app.post("/api/gigs", async (req, res) => {
+  try {
+    const gig = new Gig(req.body);
+    await gig.save();
+    res.status(201).json(gig);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Delete a gig and its associated bookings/reviews
+app.delete("/api/gigs/:id", async (req, res) => {
+  try {
+    const gigId = req.params.id;
+    await Gig.findByIdAndDelete(gigId);
+    await Booking.deleteMany({ gigId });
+    await Review.deleteMany({ gigId });
+    res.json({ message: "Gig and associated data deleted successfully." });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// BOOKING ROUTES
+// ---------------------------------------------------------------------------
+
+// Get bookings (filtered by creatorName or clientName if passed)
+app.get("/api/bookings", async (req, res) => {
+  try {
+    const { clientName, creatorName } = req.query;
+    let filter = {};
+
+    if (clientName) {
+      filter.clientName = new RegExp(`^${clientName}$`, "i");
+    }
+
+    if (creatorName) {
+      const creatorGigs = await Gig.find({
+        creatorName: new RegExp(`^${creatorName}$`, "i"),
+      });
+      const gigIds = creatorGigs.map((g) => g._id);
+      filter.gigId = { $in: gigIds };
+    }
+
+    const bookings = await Booking.find(filter).sort({ createdAt: -1 });
+    res.json(bookings);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new booking
+app.post("/api/bookings", async (req, res) => {
+  try {
+    const booking = new Booking(req.body);
+    await booking.save();
+    res.status(201).json(booking);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Update booking status (Accepted, Completed, Declined)
+app.patch("/api/bookings/:id/status", async (req, res) => {
+  try {
+    const { status } = req.body;
+    const booking = await Booking.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
+    res.json(booking);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Withdraw / Delete a booking
+app.delete("/api/bookings/:id", async (req, res) => {
+  try {
+    await Booking.findByIdAndDelete(req.params.id);
+    res.json({ message: "Booking withdrawn successfully." });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// REVIEW ROUTES
+// ---------------------------------------------------------------------------
+
+// Get all reviews
+app.get("/api/reviews", async (req, res) => {
+  try {
+    const reviews = await Review.find().sort({ createdAt: -1 });
+    res.json(reviews);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Submit a review (enforces product rule: booking must exist & be completed)
+app.post("/api/reviews", async (req, res) => {
+  try {
+    const { bookingId, rating, comment } = req.body;
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ error: "Booking not found." });
+    }
+    if (booking.status !== "Completed") {
+      return res.status(400).json({ error: "Only completed bookings can be reviewed." });
+    }
+
+    const existingReview = await Review.findOne({ bookingId });
+    if (existingReview) {
+      return res.status(400).json({ error: "Review already submitted for this booking." });
+    }
+
+    const review = new Review({
+      bookingId,
+      gigId: booking.gigId,
+      clientName: booking.clientName,
+      rating,
+      comment,
+    });
+
+    await review.save();
+    res.status(201).json(review);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SERVER CONNECTION
+// ---------------------------------------------------------------------------
+const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/sidegig";
+
+mongoose
+  .connect(MONGO_URI)
+  .then(() => {
+    console.log("Connected to MongoDB");
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch((err) => console.error("MongoDB connection error:", err));
